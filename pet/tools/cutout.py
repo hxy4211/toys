@@ -1,32 +1,46 @@
 ﻿"""
-小面宝宝抠图 v5：纯 Pillow 实现（无 numpy / 无 ML 依赖）
+抠图 v10：方向性闭运算
 
-流程：
-  1) 颜色判据标出"可当背景"（亮中性 + 暗投影；偏红的皮肤、暗色衣物/头发不算）
-  2) 从四边连通蔓生吃掉真背景（墙、白椅、椅上投影）
-  3) 连通块过滤：按面积 + 质心水平位置保留主体，丢弃左右黑色车把与顶部暗边
-  4) 大核闭运算接上被白领口断开的头/身
-  5) 填洞：只填"不与边界连通 且 面积小于阈值"的小孔（白领口），
-     避免把椅子坐垫这类大片背景也填成实心
-  6) 开运算去毛刺 + 羽化，输出 RGBA PNG
+v7 用 27×27 的方形闭运算去接白领口断缝，副作用是把手/手臂旁边的椅背白区也糊进轮廓（白色凹口）。
+
+v10 改成有方向的闭运算：
+  * 纵向闭合（竖直长条结构元）—— 专门接"头 ↔ 身体"之间被白领口切断的水平缝
+  * 横向闭合（水平短条结构元）—— 专门接"手臂 ↔ 身体"之间被白荷叶袖切断的竖直缝
+两种方向都不会跨过斜向的大片背景，所以不会糊出白块。
+
+其余沿用 v7：颜色判据 + 四边蔓生 + 剔除黑车把 + 连通块过滤 + 中部小孔填充 + 边缘守卫 + 羽化。
 """
 import sys
 from collections import deque
-from PIL import Image, ImageFilter, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageDraw, ImageOps
 
 SRC = r"C:\Users\13047\DSwork\toys\pet\assets\raw\xiaomian-original.jpg"
 OUT = r"C:\Users\13047\DSwork\toys\pet\assets"
+DBG = r"C:\Users\13047\DSwork\toys\pet\debug"
 
-LUM_SHADOW = 150     # 低于此亮度一定不是背景
-CHROMA_MAX = 24      # 中性色上限
-REDNESS_MAX = 30     # R-B 上限，超过是皮肤
-MIN_AREA = 20000     # 保留块最小面积
+LUM_SHADOW = 150
+CHROMA_MAX = 24
+REDNESS_MAX = 30
+
+MIN_AREA = 20000
+ARM_MIN_AREA = 8000
 CX_LO, CX_HI = 0.22, 0.78
-BRIDGE_R = 27        # 闭运算核：接白领口断缝
-OPEN_R = 9           # 开运算核：去毛刺
-FEATHER = 2.2
-HOLE_MAX = 12000     # 只填小于此面积的孔洞
-BOTTOM_GUARD = 6     # 距底边这么近的空白永不填
+
+HANDLE_LUM = 50
+HANDLE_CHROMA = 10
+HANDLE_MIN_AREA = 2000
+HANDLE_ZONE_X = 0.25
+HANDLE_ZONE_Y = 0.65
+
+CLOSE_V = 41        # 纵向闭合长度（接颈口）
+CLOSE_H = 21        # 横向闭合长度（接袖口）
+ISO_R = 13          # 补充方形闭运算，补掉被吃掉的荷叶边缺口
+OPEN_R = 5
+HOLE_MAX = 12000
+HOLE_CX_LO, HOLE_CX_HI = 0.28, 0.85
+BOTTOM_GUARD = 6
+EDGE_M = 40
+FEATHER = 2.0
 
 
 def bg_candidate(r, g, b):
@@ -35,9 +49,29 @@ def bg_candidate(r, g, b):
         return False
     if max(r, g, b) - min(r, g, b) > CHROMA_MAX:
         return False
-    if r - b > REDNESS_MAX:
-        return False
-    return True
+    return not (r - b > REDNESS_MAX)
+
+
+def shifted(img, dx, dy):
+    out = Image.new("L", img.size, 0)
+    out.paste(img, (dx, dy))
+    return out
+
+
+def dilate_line(img, length, axis):
+    half = length // 2
+    out = img
+    for k in range(1, half + 1):
+        d = (k, 0) if axis == "x" else (0, k)
+        out = ImageChops.lighter(out, shifted(img, *d))
+        out = ImageChops.lighter(out, shifted(img, -d[0], -d[1]))
+    return out
+
+
+def close_line(img, length, axis):
+    """方向性闭运算：沿某个轴用长条结构元先膨胀后腐蚀"""
+    return ImageChops.invert(dilate_line(ImageChops.invert(dilate_line(img, length, axis)),
+                                         length, axis))
 
 
 def main():
@@ -45,12 +79,12 @@ def main():
     w, h = im.size
     px = im.tobytes()
 
+    # 1) 颜色候选 + 2) 四边蔓生
     cand = bytearray(w * h)
     for i in range(w * h):
         if bg_candidate(px[3 * i], px[3 * i + 1], px[3 * i + 2]):
             cand[i] = 1
 
-    # --- 2) 从四边连通蔓生 ---
     bg = bytearray(w * h)
     q = deque()
     for x in range(w):
@@ -71,7 +105,41 @@ def main():
 
     fg = bytearray(1 if not v else 0 for v in bg)
 
-    # --- 3) 连通块过滤 ---
+    # 3) 剔除黑色车把（左车把和左手臂是连成一整块的，只能按颜色在像素层面抠掉）
+    dark_like = bytearray(w * h)
+    for i in range(w * h):
+        r, g, b = px[3 * i], px[3 * i + 1], px[3 * i + 2]
+        lum = (r * 299 + g * 587 + b * 114) // 1000
+        if lum < HANDLE_LUM and (max(r, g, b) - min(r, g, b)) < HANDLE_CHROMA:
+            dark_like[i] = 1
+    seen_h = bytearray(w * h)
+    for start in range(w * h):
+        if not dark_like[start] or seen_h[start]:
+            continue
+        q = deque([start]); seen_h[start] = 1
+        cells = []
+        minx, miny, maxx, maxy = w, h, 0, 0
+        while q:
+            j = q.popleft(); cells.append(j)
+            x, y = j % w, j // w
+            minx = min(minx, x); maxx = max(maxx, x)
+            miny = min(miny, y); maxy = max(maxy, y)
+            for k, ok in ((j - 1, x > 0), (j + 1, x < w - 1), (j - w, y > 0), (j + w, y < h - 1)):
+                if ok and dark_like[k] and not seen_h[k]:
+                    seen_h[k] = 1; q.append(k)
+        cy = (miny + maxy) / 2
+        if (len(cells) >= HANDLE_MIN_AREA and cy > HANDLE_ZONE_Y * h
+                and (maxx < HANDLE_ZONE_X * w or minx > (1 - HANDLE_ZONE_X) * w)):
+            for j in cells:
+                x, y = j % w, j // w
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < w and 0 <= ny < h and fg[ny * w + nx]:
+                            fg[ny * w + nx] = 0
+            print(f"  剔除车把 area={len(cells)} bbox=({minx},{miny},{maxx},{maxy})")
+
+    # 4) 连通块过滤
     lab = [0] * (w * h)
     comps = []
     cur = 0
@@ -79,111 +147,108 @@ def main():
         if fg[i] and not lab[i]:
             cur += 1
             q = deque([i]); lab[i] = cur
-            n = 0; sx = 0
+            n = sx = skin = 0
             while q:
                 j = q.popleft()
                 n += 1
                 x, y = j % w, j // w
                 sx += x
+                r, g, b = px[3 * j], px[3 * j + 1], px[3 * j + 2]
+                lum = (r * 299 + g * 587 + b * 114) // 1000
+                if r - b > 40 and lum > 90:
+                    skin += 1
                 for k, ok in ((j - 1, x > 0), (j + 1, x < w - 1), (j - w, y > 0), (j + w, y < h - 1)):
                     if ok and fg[k] and not lab[k]:
                         lab[k] = cur; q.append(k)
-            comps.append((n, cur, sx / n))
+            comps.append((n, cur, sx / n, skin / n))
 
-    keep = {cid for n, cid, cx in comps if n >= MIN_AREA and CX_LO * w <= cx <= CX_HI * w}
-    print(f"保留块 {sorted(keep)} / 共 {len(comps)} 块")
+    keep = set()
+    for n, cid, cx, skin in sorted(comps, reverse=True):
+        mid = CX_LO * w <= cx <= CX_HI * w
+        if (n >= MIN_AREA and mid) or (n >= ARM_MIN_AREA and skin >= 0.40):
+            keep.add(cid)
+            print(f"  保留 #{cid} area={n} 质心x={cx:.0f} 肤色={skin:.0%}")
+    print(f"保留 {len(keep)} 块 / 共 {len(comps)} 块")
 
     mask = Image.frombytes("L", (w, h), bytes(
         255 if (fg[i] and lab[i] in keep) else 0 for i in range(w * h)))
 
-    # --- 4) 接白领口断缝 ---
-    mask = mask.filter(ImageFilter.MaxFilter(BRIDGE_R)).filter(ImageFilter.MinFilter(BRIDGE_R))
+    # 5) 方向性闭运算
+    mask = close_line(mask, CLOSE_H, "x")
+    mask = close_line(mask, CLOSE_V, "y")
+    if ISO_R:
+        mask = mask.filter(ImageFilter.MaxFilter(ISO_R)).filter(ImageFilter.MinFilter(ISO_R))
+        print(f"补充方形闭运算: {ISO_R}")
 
-    # --- 4.5) 边缘守卫：闭运算会把贴边的窄条背景（照片底部的白桌面）也糊成前景，
-    #           这里把"背景色 + 靠近画面边缘"的像素强制还原成透明
-    EDGE_M = 40
+    # 边缘守卫
     mp = mask.load()
     for y in range(h):
         for x in range(w):
-            if mp[x, y] == 0:
+            if not mp[x, y]:
                 continue
             near = x < EDGE_M or x > w - 1 - EDGE_M or y < EDGE_M or y > h - 1 - EDGE_M
             if near and bg_candidate(px[3 * (y * w + x)], px[3 * (y * w + x) + 1], px[3 * (y * w + x) + 2]):
                 mp[x, y] = 0
-    print("边缘守卫已应用")
 
-    # --- 5) 只在"小且不贴边"的孔洞里填实 ---
-    hole_region = ImageOps.invert(mask)
-    hp = hole_region.load()
+    # 6) 只填中部小孔
+    hole = ImageOps.invert(mask)
+    hp = hole.load()
     solid = mask.load()
     seen = bytearray(w * h)
-    filled_total = 0
+    filled = 0
     for start in range(w * h):
         if hp[start % w, start // w] == 0 or seen[start]:
             continue
         q = deque([start]); seen[start] = 1
-        cells = []
-        touch_bottom = False
+        cells = []; touch = False; sx = 0
         while q:
-            j = q.popleft()
-            cells.append(j)
+            j = q.popleft(); cells.append(j)
             x, y = j % w, j // w
+            sx += x
             if y >= h - BOTTOM_GUARD or x == 0 or x == w - 1 or y == 0:
-                touch_bottom = True
+                touch = True
             for k, ok in ((j - 1, x > 0), (j + 1, x < w - 1), (j - w, y > 0), (j + w, y < h - 1)):
                 if ok and not seen[k] and hp[k % w, k // w] > 0:
                     seen[k] = 1; q.append(k)
-        if not touch_bottom and len(cells) <= HOLE_MAX:
+        cx = sx / len(cells)
+        if not touch and HOLE_CX_LO * w <= cx <= HOLE_CX_HI * w and len(cells) <= HOLE_MAX:
             for j in cells:
                 solid[j % w, j // w] = 255
-            filled_total += len(cells)
-    print(f"填充小孔: {filled_total} px")
+            filled += len(cells)
+    print(f"填充小孔: {filled} px")
 
-    # --- 6) 开运算 + 羽化 ---
     mask = mask.filter(ImageFilter.MinFilter(OPEN_R)).filter(ImageFilter.MaxFilter(OPEN_R))
     mask = mask.filter(ImageFilter.GaussianBlur(FEATHER))
 
-    # --- 6.5) 羽化会把边缘守卫清掉的浅色又"糊"回来一圈，这里再守一次 ---
     mp = mask.load()
     for y in range(h):
         for x in range(w):
-            v = mp[x, y]
-            if not v:
+            if not mp[x, y]:
                 continue
             near = x < EDGE_M or x > w - 1 - EDGE_M or y < EDGE_M or y > h - 1 - EDGE_M
             if near and bg_candidate(px[3 * (y * w + x)], px[3 * (y * w + x) + 1], px[3 * (y * w + x) + 2]):
                 mp[x, y] = 0
-    print("羽化后二次守卫完成")
 
     out = im.convert("RGBA")
     out.putalpha(mask)
     bbox = mask.point(lambda v: 255 if v > 10 else 0).getbbox()
     cut = out.crop(bbox)
-    print("裁剪框:", bbox, "-> 尺寸", cut.size)
+    print("裁剪框:", bbox, "尺寸", cut.size)
 
-    # 校验：底部几行不该有大片不透明的浅色
-    cp = cut.load()
-    cw, ch = cut.size
-    bad = 0
-    for y in range(max(0, ch - 6), ch):
-        for x in range(0, cw, 4):
-            r, g, b, a = cp[x, y]
-            if a > 200 and min(r, g, b) > 200:
-                bad += 1
-    print(f"底部白色残留采样点: {bad}（应为 0）")
-
-    cut.save(rf"{OUT}\xiaomian-cutout-v7.png")
+    tag = "final"
+    cut.save(rf"{OUT}\xiaomian-cutout-{tag}.png")
+    mask.save(rf"{DBG}\mask-{tag}.png")
 
     pw, ph = cut.size
     prev = Image.new("RGB", (pw, ph), (255, 255, 255))
     d = ImageDraw.Draw(prev)
-    for y in range(0, ph, 24):
-        for x in range(0, pw, 24):
-            if ((x // 24) + (y // 24)) % 2 == 0:
-                d.rectangle([x, y, x + 23, y + 23], fill=(226, 226, 226))
+    for y in range(0, ph, 20):
+        for x in range(0, pw, 20):
+            if ((x // 20) + (y // 20)) % 2 == 0:
+                d.rectangle([x, y, x + 19, y + 19], fill=(222, 222, 222))
     prev.paste(cut, (0, 0), cut)
-    prev.save(r"C:\Users\13047\DSwork\toys\pet\debug\checker-v7.png")
-    print("预览 -> debug/checker-v7.png")
+    prev.save(rf"{DBG}\checker-{tag}.png")
+    print(f"预览 -> debug/checker-{tag}.png")
 
 
 if __name__ == "__main__":
