@@ -1,8 +1,8 @@
-# 小面宝宝桌宠 🍼
+﻿# 小面宝宝桌宠 🍼
 
 用宝宝照片做的 Windows 桌面宠物。**只在 DSH Desktop 运行时出现**，关掉就自动躲起来。
 
-<img src="../../preview-states.png" width="900">
+<img src="../preview-states.png" width="900">
 
 （从上到下：待机呼吸 / 跟手右倾 / 跟手左倾 / 睡觉 Zzz / 说话气泡）
 
@@ -81,3 +81,4 @@ pet/
 这台机器上 `pip` 装不了包（Python 装在 `D:\python`，沙箱禁止写入；解包时还会 `Permission denied`），
 所以 Pillow 是手动下载 wheel 解压到 `.pylibs` 的，`pet.py` 启动时自己把该目录加进 `sys.path`。
 换台机器可以直接 `pip install pillow`，然后把 `.pylibs` 删掉。
+
