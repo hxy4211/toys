@@ -1,18 +1,35 @@
-﻿from PIL import Image
-base = r"C:\Users\13047\DSwork\toys\pet\assets"
-im = Image.open(base + r"\xiaomian-cutout.png").convert("RGBA")
+"""
+从小面抠图结果生成桌宠实际使用的素材。
+
+流程：cutout.py -> assets/xiaomian-cutout.png（原始抠图，带透明外边）
+      本脚本     -> assets/xiaomian.png（裁掉透明边的主素材）
+                  -> assets/xiaomian-320h.png（桌宠运行时真正加载的尺寸）
+中间产物 xiaomian-cutout.png 不进版本库，缺失时本脚本会自动重跑 cutout.py。
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+from PIL import Image
+
+BASE = Path(__file__).resolve().parent.parent      # pet/
+ASSETS = BASE / "assets"
+CUTOUT = ASSETS / "xiaomian-cutout.png"
+MASTER = ASSETS / "xiaomian.png"
+RUNTIME = ASSETS / "xiaomian-320h.png"
+SPRITE_H = 320
+
+if not CUTOUT.exists():
+    print("缺少中间产物 xiaomian-cutout.png，正在重新抠图...")
+    subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "cutout.py")], check=True)
+
+im = Image.open(CUTOUT).convert("RGBA")
 bbox = im.split()[3].point(lambda v: 255 if v > 8 else 0).getbbox()
 im = im.crop(bbox)
-im.save(base + r"\xiaomian.png")
-print("正式素材:", im.size)
-for th in (320, 220, 160):
-    r = th / im.size[1]
-    s = im.resize((round(im.size[0]*r), th), Image.LANCZOS)
-    s.save(base + rf"\xiaomian-{th}h.png")
-    print(f"  {th}h ->", s.size)
-# 边缘放大检查
-reg = (60, 90, 220, 200)
-c = im.crop(reg)
-bg = Image.new("RGB", c.size, (40, 42, 48)); bg.paste(c, (0,0), c)
-bg.resize((c.width*5, c.height*5), Image.NEAREST).save(r"C:\Users\13047\DSwork\toys\pet\debug\edge-zoom3.png")
-print("edge zoom saved")
+im.save(MASTER)
+print("主素材:", im.size, "->", MASTER.name)
+
+ratio = SPRITE_H / im.size[1]
+sprite = im.resize((round(im.size[0] * ratio), SPRITE_H), Image.LANCZOS)
+sprite.save(RUNTIME)
+print(f"运行素材 {SPRITE_H}h ->", sprite.size, "->", RUNTIME.name)

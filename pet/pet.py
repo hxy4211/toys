@@ -44,7 +44,7 @@ STATE_PATH = BASE / "state.json"
 LOG_PATH = BASE / "pet.log"
 CONFIG_PATH = BASE / "config.json"
 PID_PATH = BASE / "pet.pid"
-VERSION = "1.0"
+VERSION = "1.1"
 
 # ---------------------------------------------------------------- 可调参数
 SPRITE_H = 220          # 默认显示高度（逻辑像素）；会被 config.json 里的 height 覆盖
@@ -54,6 +54,7 @@ PAD_BOT = 6
 FOLLOW_MAX = 16         # 跟手最大水平偏移（逻辑像素）
 FOLLOW_MAX_Y = 10
 TILT_MAX = 2.2          # 跟手最大倾斜角度
+MISS_GRACE_AFTER_SEEN = 1.5   # 见过 DSH 后，连续确认这么多秒没在跑才退出
 FPS_MS = 16             # 定时器间隔
 FONT_PATH = Path(r"C:\Windows\Fonts\msyh.ttc")
 
@@ -190,25 +191,36 @@ def pid_alive(pid) -> bool:
         kernel32.CloseHandle(h)
 
 
-def dsh_running() -> bool:
+def dsh_running():
     """检测 DSH Desktop 是否在跑（Toolhelp 快照，纯 ctypes，很轻）
+
+    返回值：True=在跑，False=确认没跑，None=枚举失败（状态未知）。
+    枚举失败绝不能当成"已经关闭"，否则偶发的快照失败会让桌宠闪退重开。
 
     设环境变量 XIAOMIAN_FAKE_NO_DSH=1 可强制返回 False（仅用于测试退出逻辑）"""
     if os.environ.get("XIAOMIAN_FAKE_NO_DSH") == "1":
         return False
     snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if not snap or snap == 2 ** 64 - 1:
-        return False
+        return None
+    found = False
     try:
         entry = PROCESSENTRY32W()
         entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        any_entry = False
         while ok:
+            any_entry = True
             name = entry.szExeFile.upper()
             if "DSH" in name or "DEEPSEEK HARNESS" in name:
-                return True
+                found = True
+                break
             ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
-        return False
+        if not any_entry:
+            return None          # 一个进程都没枚举到，显然是快照异常
+        return found
+    except Exception:
+        return None
     finally:
         kernel32.CloseHandle(snap)
 
@@ -507,22 +519,23 @@ class Pet:
         self._prev_time = now
         self._t += dt
 
-        # DSH 在线检测（每 ~0.5 秒）
+        # DSH 在线检测（每 ~0.5 秒）；ok=None 表示枚举失败，保持原判断
         if not self.force and int(self._t * 2) != int((self._t - dt) * 2):
             ok = dsh_running()
-            if ok != self._dsh_ok:
-                self._dsh_ok = ok
-                self._log("DSH 已启动，桌宠出现" if ok else "DSH 已关闭")
-            if ok:
-                self._seen_dsh = True
+            if ok is not None:
+                if ok != self._dsh_ok:
+                    self._dsh_ok = ok
+                    self._log("DSH 已启动，桌宠出现" if ok else "DSH 已关闭")
+                if ok:
+                    self._seen_dsh = True
 
-        # DSH 不在 -> 桌宠直接退出（不是隐藏）。
-        # 启动时的短暂宽限只用于覆盖"和 DSH 同时被拉起"的竞态；
-        # 一旦见过 DSH，它一消失就立刻退出。
+        # DSH 不在 -> 桌宠退出（不是隐藏）。
+        # 宽限期：启动时 20 秒（覆盖"和 DSH 同时被拉起"的竞态）；
+        #         见过 DSH 之后 1.5 秒（3 次轮询），避免偶发枚举失败造成闪退重开。
         if not self.force and not self._dsh_ok:
             if self._gone_since is None:
                 self._gone_since = now
-            grace = 20.0 if not self._seen_dsh else 0.0
+            grace = MISS_GRACE_AFTER_SEEN if self._seen_dsh else 20.0
             if now - self._gone_since >= grace:
                 self._log("DSH 未运行，桌宠退出")
                 user32.PostQuitMessage(0)

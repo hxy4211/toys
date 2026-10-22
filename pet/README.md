@@ -1,8 +1,8 @@
-# 小面宝宝桌宠 🍼
+﻿# 小面宝宝桌宠 🍼
 
 用宝宝照片做的 Windows 桌面宠物。**只在 DSH Desktop 运行时出现**，关掉就自动躲起来。
 
-当前版本：**pet-v1.0**
+当前版本：**pet-v1.1**
 
 <img src="../preview-states.png" width="900">
 
@@ -51,15 +51,13 @@ pet/
 ├─ pet.log / watchdog.log  出错日志（自动生成）
 ├─ pet.pid / watchdog.pid  进程号，用于互相判断存活（自动生成）
 ├─ assets/
-│  ├─ xiaomian.png         抠好的立绘 799×666 透明 PNG（含两只手臂）
-│  ├─ xiaomian-cutout.png  抠图脚本的原始输出（未去透明边）
-│  ├─ xiaomian-320h.png    大尺寸备用
-│  ├─ xiaomian-220h.png    桌宠实际用的尺寸
-│  ├─ xiaomian-160h.png    小尺寸备用
-│  └─ raw/                 原图（未抠）
+│  ├─ xiaomian.png         抠好的立绘 799×666 透明 PNG（主素材，含两只手臂）
+│  ├─ xiaomian-320h.png    桌宠运行时真正加载的尺寸
+│  └─ raw/                 原图（未抠，抠图脚本的输入）
 ├─ tools/
 │  ├─ cutout.py            抠图脚本（可重复运行，参数在文件头）
-│  ├─ finalize.py          从抠图结果生成三种尺寸
+│  ├─ finalize.py          生成主素材与运行尺寸（中间产物缺失会自动重抠）
+│  ├─ install_autostart.ps1 安装开机自启的实际逻辑
 │  └─ fetch_wheels.mjs     从镜像下载 wheel（本机 pip 装不了包时的绕路方案）
 └─ .pylibs/                Pillow 本体（不进版本库）
 ```
@@ -109,7 +107,7 @@ DSH 一消失就 `PostQuitMessage` 退出（见过 DSH 之后是立即退出；�
 1. 把新照片放进 `assets/raw/`
 2. 改 `tools/cutout.py` 开头的 `SRC`，按需调 `LUM_MIN / CHROMA_MAX / REDNESS_MAX / VAR_THRESHOLD`
 3. 跑 `python tools/cutout.py`，看 `debug/checker.png` 是否满意
-4. 跑 `python tools/finalize.py` 生成三种尺寸
+4. 跑 `python tools/finalize.py` 生成主素材与运行尺寸
 5. `python pet.py --preview` 出状态对比图
 
 ---
@@ -119,4 +117,6 @@ DSH 一消失就 `PostQuitMessage` 退出（见过 DSH 之后是立即退出；�
 这台机器上 `pip` 装不了包（Python 装在 `D:\python`，沙箱禁止写入；解包时还会 `Permission denied`），
 所以 Pillow 是手动下载 wheel 解压到 `.pylibs` 的，`pet.py` 启动时自己把该目录加进 `sys.path`。
 换台机器可以直接 `pip install pillow`，然后把 `.pylibs` 删掉。
+
+
 
