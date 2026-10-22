@@ -1,5 +1,6 @@
-' 双击我：启动小面宝宝的守护进程（无黑框）
-' 守护进程常驻后台，检测到 DSH 打开就拉起桌宠；DSH 关闭时桌宠自己退出
+' Double-click to start the Xiaomian pet watchdog (no console window).
+' The watchdog keeps running; it launches the pet when DSH is open and
+' the pet exits by itself when DSH closes.
 Option Explicit
 Dim fso, sh, base, py, exe
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -12,9 +13,9 @@ If Not fso.FileExists(exe) Then exe = "pythonw.exe"
 
 py = base & "\watchdog.py"
 If Not fso.FileExists(py) Then
-    MsgBox "找不到 watchdog.py，请确认它和本脚本在同一目录", 48, "小面宝宝"
+    MsgBox "Cannot find watchdog.py next to this script.", 48, "Xiaomian Pet"
     WScript.Quit 1
 End If
 
-' 0 = 隐藏控制台窗口, False = 不等待退出
+' 0 = hide console, False = do not wait
 sh.Run """" & exe & """ """ & py & """", 0, False

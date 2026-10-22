@@ -16,7 +16,7 @@
 
 <img src="preview-states.png" width="820">
 
-双击 `pet/启动小面.vbs` 启动。
+**首次使用**：双击 `pet/install_autostart.bat` 一次（装开机自启 + 立即启动）。之后每次开机自动运行；手动启动可双击 `pet/start_pet.vbs`。
 
 - **移动鼠标** → 它会朝你的方向偏头
 - **按住拖动** → 拖到任意位置，松手有果冻回弹，位置记住
