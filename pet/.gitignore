@@ -1,4 +1,4 @@
-# Python 依赖（Pillow 手动解压在这里，体积大，不进版本库）
+﻿# Python 依赖（Pillow 手动解压在这里，体积大，不进版本库）
 .pylibs/
 .tmp/
 .wheels/
@@ -6,8 +6,12 @@
 # 运行时状态
 state.json
 pet.log
+watchdog.log
+pet.pid
+watchdog.pid
 __pycache__/
 *.pyc
 
 # 调试产物
 debug/
+

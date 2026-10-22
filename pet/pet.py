@@ -22,6 +22,7 @@
 import ctypes
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -42,6 +43,7 @@ SPRITE_PATH = BASE / "assets" / "xiaomian-320h.png"
 STATE_PATH = BASE / "state.json"
 LOG_PATH = BASE / "pet.log"
 CONFIG_PATH = BASE / "config.json"
+PID_PATH = BASE / "pet.pid"
 VERSION = "1.0"
 
 # ---------------------------------------------------------------- 可调参数
@@ -165,7 +167,11 @@ for fn, res, args in [
 
 
 def dsh_running() -> bool:
-    """检测 DSH Desktop 是否在跑（Toolhelp 快照，纯 ctypes，很轻）"""
+    """检测 DSH Desktop 是否在跑（Toolhelp 快照，纯 ctypes，很轻）
+
+    设环境变量 XIAOMIAN_FAKE_NO_DSH=1 可强制返回 False（仅用于测试退出逻辑）"""
+    if os.environ.get("XIAOMIAN_FAKE_NO_DSH") == "1":
+        return False
     snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if snap in (0, -1):
         return False
@@ -229,12 +235,15 @@ class Pet:
         self._alpha_map = None
         self._prev_time = time.monotonic()
         self._dsh_ok = force or dsh_running()
+        self._seen_dsh = self._dsh_ok     # 是否见过 DSH（见过之后，它一消失就立刻退出）
+        self._gone_since = None
         self._t = 0.0
 
         if not preview:
             self._create_window()
+            self._write_pid()
         if not self._dsh_ok and not preview:
-            self._log("DSH 未运行，桌宠待机中（启动 DSH 后会自动出现）")
+            self._log("DSH 未运行，桌宠等待启动（20 秒内没出现就退出）")
 
     # ------------------------------------------------------------ 预览
     def build_preview(self, out_path: Path):
@@ -268,6 +277,20 @@ class Pet:
         return out_path
 
     # ------------------------------------------------------------ 窗口
+    def _write_pid(self):
+        """写 pid 文件，守护进程靠它判断桌宠是否还活着"""
+        try:
+            PID_PATH.write_text(str(os.getpid()))
+        except Exception:
+            pass
+
+    def _remove_pid(self):
+        try:
+            if PID_PATH.exists() and PID_PATH.read_text().strip() == str(os.getpid()):
+                PID_PATH.unlink()
+        except Exception:
+            pass
+
     def _load_height(self):
         """显示高度：默认 220，可在 config.json 里改 {"height": 260}"""
         try:
@@ -457,7 +480,24 @@ class Pet:
             ok = dsh_running()
             if ok != self._dsh_ok:
                 self._dsh_ok = ok
-                self._log("DSH 已启动" if ok else "DSH 已退出，桌宠隐藏")
+                self._log("DSH 已启动，桌宠出现" if ok else "DSH 已关闭")
+            if ok:
+                self._seen_dsh = True
+
+        # DSH 不在 -> 桌宠直接退出（不是隐藏）。
+        # 启动时的短暂宽限只用于覆盖"和 DSH 同时被拉起"的竞态；
+        # 一旦见过 DSH，它一消失就立刻退出。
+        if not self.force and not self._dsh_ok:
+            if self._gone_since is None:
+                self._gone_since = now
+            grace = 20.0 if not self._seen_dsh else 0.0
+            if now - self._gone_since >= grace:
+                self._log("DSH 未运行，桌宠退出")
+                user32.PostQuitMessage(0)
+                return
+        else:
+            self._gone_since = None
+
         want = (self._dsh_ok or self.force) and now >= self.hide_until
 
         if want and not self.visible:
@@ -632,10 +672,13 @@ class Pet:
     # ------------------------------------------------------------ 主循环
     def run(self):
         msg = wt.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-        self._save_home()
+        try:
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            self._save_home()
+            self._remove_pid()
 
 
 if __name__ == "__main__":
