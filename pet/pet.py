@@ -41,9 +41,10 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 SPRITE_PATH = BASE / "assets" / "xiaomian-320h.png"
 STATE_PATH = BASE / "state.json"
 LOG_PATH = BASE / "pet.log"
+CONFIG_PATH = BASE / "config.json"
 
 # ---------------------------------------------------------------- 可调参数
-SPRITE_H = 320          # 显示高度（逻辑像素，会再乘 DPI 缩放）
+SPRITE_H = 220          # 默认显示高度（逻辑像素）；会被 config.json 里的 height 覆盖
 PAD_X = 26              # 左右留白（让倾斜/摇摆不被裁掉）
 PAD_TOP = 76            # 上方留白（气泡、Zzz 用）
 PAD_BOT = 6
@@ -192,9 +193,10 @@ class Pet:
 
         dpi = user32.GetDpiForSystem() if hasattr(user32, "GetDpiForSystem") else 96
         self.scale = max(1.0, dpi / 96.0)
+        self.sprite_h = self._load_height()
 
         sprite = Image.open(SPRITE_PATH).convert("RGBA")
-        target_h = round(SPRITE_H * self.scale)
+        target_h = round(self.sprite_h * self.scale)
         ratio = target_h / sprite.height
         self.sprite = sprite.resize((round(sprite.width * ratio), target_h), Image.LANCZOS)
 
@@ -265,6 +267,15 @@ class Pet:
         return out_path
 
     # ------------------------------------------------------------ 窗口
+    def _load_height(self):
+        """显示高度：默认 220，可在 config.json 里改 {"height": 260}"""
+        try:
+            cfg = json.loads(CONFIG_PATH.read_text("utf-8"))
+            v = int(cfg.get("height", SPRITE_H))
+            return max(80, min(900, v))
+        except Exception:
+            return SPRITE_H
+
     def _create_window(self):
         hinst = kernel32.GetModuleHandleW(None)
         self._wndproc = WNDPROC(self._on_message)
