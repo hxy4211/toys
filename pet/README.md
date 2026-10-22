@@ -2,6 +2,8 @@
 
 用宝宝照片做的 Windows 桌面宠物。**只在 DSH Desktop 运行时出现**，关掉就自动躲起来。
 
+当前版本：**v1.0**
+
 <img src="../preview-states.png" width="900">
 
 （从上到下：待机呼吸 / 跟手右倾 / 跟手左倾 / 睡觉 Zzz / 说话气泡）

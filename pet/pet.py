@@ -42,6 +42,7 @@ SPRITE_PATH = BASE / "assets" / "xiaomian-320h.png"
 STATE_PATH = BASE / "state.json"
 LOG_PATH = BASE / "pet.log"
 CONFIG_PATH = BASE / "config.json"
+VERSION = "1.0"
 
 # ---------------------------------------------------------------- 可调参数
 SPRITE_H = 220          # 默认显示高度（逻辑像素）；会被 config.json 里的 height 覆盖
@@ -639,6 +640,9 @@ class Pet:
 
 if __name__ == "__main__":
     force = "--force" in sys.argv
+    if "--version" in sys.argv:
+        print(f"小面宝宝桌宠 v{VERSION}")
+        sys.exit(0)
     try:
         if "--preview" in sys.argv:
             pet = Pet(force=True, preview=True)
