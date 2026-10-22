@@ -144,6 +144,14 @@ class WNDCLASSEXW(ctypes.Structure):
 
 
 for fn, res, args in [
+    # kernel32：句柄类返回值必须声明成 HANDLE，否则 64 位下会被截断成 int 而失效
+    (kernel32.OpenProcess, wt.HANDLE, [wt.DWORD, wt.BOOL, wt.DWORD]),
+    (kernel32.GetExitCodeProcess, wt.BOOL, [wt.HANDLE, ctypes.POINTER(wt.DWORD)]),
+    (kernel32.CloseHandle, wt.BOOL, [wt.HANDLE]),
+    (kernel32.CreateToolhelp32Snapshot, wt.HANDLE, [wt.DWORD, wt.DWORD]),
+    (kernel32.Process32FirstW, wt.BOOL, [wt.HANDLE, ctypes.c_void_p]),
+    (kernel32.Process32NextW, wt.BOOL, [wt.HANDLE, ctypes.c_void_p]),
+    (kernel32.GetModuleHandleW, wt.HMODULE, [wt.LPCWSTR]),
     (user32.RegisterClassExW, wt.WORD, [ctypes.POINTER(WNDCLASSEXW)]),
     (user32.CreateWindowExW, wt.HWND, [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,
                                        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -166,6 +174,22 @@ for fn, res, args in [
     fn.argtypes = args
 
 
+def pid_alive(pid) -> bool:
+    """判断某个进程是否还活着（守护进程也用它，所以句柄类型必须声明清楚）"""
+    if not pid:
+        return False
+    h = kernel32.OpenProcess(0x1000, False, int(pid))     # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    try:
+        code = wt.DWORD()
+        if not kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return False
+        return code.value == 259                          # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(h)
+
+
 def dsh_running() -> bool:
     """检测 DSH Desktop 是否在跑（Toolhelp 快照，纯 ctypes，很轻）
 
@@ -173,7 +197,7 @@ def dsh_running() -> bool:
     if os.environ.get("XIAOMIAN_FAKE_NO_DSH") == "1":
         return False
     snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snap in (0, -1):
+    if not snap or snap == 2 ** 64 - 1:
         return False
     try:
         entry = PROCESSENTRY32W()
@@ -240,6 +264,14 @@ class Pet:
         self._t = 0.0
 
         if not preview:
+            # 单实例：守护进程和手动启动可能撞车，已有一个在跑就直接让位
+            try:
+                other = int(PID_PATH.read_text().strip())
+            except Exception:
+                other = 0
+            if other and other != os.getpid() and pid_alive(other):
+                self._log(f"已有桌宠在运行 pid={other}，本次退出")
+                raise SystemExit(0)
             self._create_window()
             self._write_pid()
         if not self._dsh_ok and not preview:
