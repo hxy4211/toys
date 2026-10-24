@@ -2,7 +2,7 @@
 
 用宝宝照片做的 Windows 桌面宠物。**只在 DSH Desktop 运行时出现**，关掉就自动躲起来。
 
-当前版本：**pet-v1.1**
+当前版本：**pet-v1.2**
 
 <img src="../preview-states.png" width="900">
 

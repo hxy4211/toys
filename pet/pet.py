@@ -24,6 +24,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import sys
 import time
 import traceback
@@ -44,7 +45,9 @@ STATE_PATH = BASE / "state.json"
 LOG_PATH = BASE / "pet.log"
 CONFIG_PATH = BASE / "config.json"
 PID_PATH = BASE / "pet.pid"
-VERSION = "1.1"
+WATCHDOG_PID_PATH = BASE / "watchdog.pid"
+WATCHDOG_SCRIPT = BASE / "watchdog.py"
+VERSION = "1.2"
 
 # ---------------------------------------------------------------- 可调参数
 SPRITE_H = 220          # 默认显示高度（逻辑像素）；会被 config.json 里的 height 覆盖
@@ -273,6 +276,7 @@ class Pet:
         self._dsh_ok = force or dsh_running()
         self._seen_dsh = self._dsh_ok     # 是否见过 DSH（见过之后，它一消失就立刻退出）
         self._gone_since = None
+        self._wd_checked = 0.0
         self._t = 0.0
 
         if not preview:
@@ -334,6 +338,28 @@ class Pet:
                 PID_PATH.unlink()
         except Exception:
             pass
+
+    def _ensure_watchdog(self, now):
+        """守护进程挂了就把它拉起来 —— 与 watchdog.py 拉起桌宠互为兜底，
+        这样只死一个也不会导致整条链断掉。"""
+        if self.force or now - self._wd_checked < 5.0:
+            return
+        self._wd_checked = now
+        try:
+            pid = int(WATCHDOG_PID_PATH.read_text().strip())
+        except Exception:
+            pid = 0
+        if pid and pid_alive(pid):
+            return
+        exe = Path(sys.executable).with_name("pythonw.exe")
+        if not exe.exists():
+            exe = Path(sys.executable)
+        try:
+            subprocess.Popen([str(exe), str(WATCHDOG_SCRIPT)], cwd=str(BASE),
+                             creationflags=0x08000000, close_fds=True)   # CREATE_NO_WINDOW
+            self._log("守护进程不在，已重新拉起")
+        except Exception:
+            self._log("拉起守护进程失败: " + traceback.format_exc())
 
     def _load_height(self):
         """显示高度：默认 220，可在 config.json 里改 {"height": 260}"""
@@ -518,6 +544,9 @@ class Pet:
         dt = min(0.1, now - self._prev_time)
         self._prev_time = now
         self._t += dt
+
+        # 守护进程若已不在，立刻补一个（互为主备）
+        self._ensure_watchdog(now)
 
         # DSH 在线检测（每 ~0.5 秒）；ok=None 表示枚举失败，保持原判断
         if not self.force and int(self._t * 2) != int((self._t - dt) * 2):
@@ -748,5 +777,6 @@ if __name__ == "__main__":
         with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(traceback.format_exc())
         raise
+
 
 
